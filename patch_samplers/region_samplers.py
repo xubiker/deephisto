@@ -32,8 +32,29 @@ class RegionAnnotation:
         layer: int,
         layer_size: tuple[int, int],
         patch_size: int,
-        region_intersection: float,
     ):
+        """
+        Create a RegionAnnotation object.
+
+        Args:
+            img_path : Path
+                Path to the image that contains the region.
+            region_idx : int
+                Index of the region in the annotation.
+            class_ : str
+                Class label of the region.
+            vertices : np.ndarray
+                Vertices of the region.
+            layer : int
+                Layer of the image where the region is located.
+            layer_size : tuple[int, int]
+                Size of the layer.
+            patch_size : int
+                Size of the patches to be extracted from the region.
+
+        Raises:
+            RuntimeError: If the region has invalid shape or dtype.
+        """
         self.file_path = img_path
         self.region_idx = region_idx
         self.class_ = class_
@@ -41,7 +62,6 @@ class RegionAnnotation:
         self._layer = layer
         self._layer_size = layer_size
         self._patch_size = patch_size
-        self._region_intersection = region_intersection
 
         if len(vertices.shape) != 2 or vertices.shape[1] != 2:
             raise RuntimeError("Invalid region shape. It should be (N, 2).")
@@ -51,25 +71,53 @@ class RegionAnnotation:
         if not polygon.is_valid:  # try to fix it
             print("invalid polygon found. Fixing...")
             polygon = polygon.buffer(0)
-        area = polygon.area
-        if area < patch_size * patch_size * region_intersection:
-            raise RuntimeError("Region is too small.")
         self.polygon = polygon
-        self.area = area
+        self.area = polygon.area
 
     def __str__(self) -> str:
+        """Returns a string representation of RegionAnnotation."""
         return (
             f"Region [{self.file_path.stem}, {self.region_idx}, "
             f"{self.class_}, {self.vertices.shape}, {round(self.area, 0)}]"
         )
 
     def _extract_patch_coords(
-        self, n_patches: int, miss_limit: int = 500
+        self,
+        n_patches: int,
+        region_intersection: float = 0.75,
+        miss_limit: int = 500,
     ) -> list[tuple[int, int]]:
+        """
+        Extracts coordinates for patches within the region.
+
+        This method attempts to extract a specified number of patch
+        coordinates within the defined region. Each patch must satisfy
+        a minimum intersection area with the region polygon. The method
+        employs a random search approach and limits the number of failed
+        attempts to find suitable patches.
+
+        Args:
+            n_patches (int): Number of patch coordinates to generate.
+            region_intersection (float): Minimum intersection area ratio
+                required between the patch and the region. Defaults to 0.75.
+            miss_limit (int): Maximum number of unsuccessful attempts to
+                find a suitable patch. Defaults to 500.
+
+        Returns:
+            list[tuple[int, int]]: A list of coordinates (y, x) for each
+            extracted patch.
+
+        Raises:
+            RuntimeError: If the region is too small or the miss limit is
+            reached without finding enough suitable patches.
+        """
+
         ps = self._patch_size
         h, w = self._layer_size
         x0, y0, x1, y1 = self.polygon.bounds
-        res = []
+        if self.area < ps * ps * region_intersection:
+            raise RuntimeError("Region is too small.")
+        coords = []
         for _ in range(n_patches):
             n_miss = 0  # number of random patches not meeting the criteria
             while n_miss < miss_limit:
@@ -84,8 +132,8 @@ class RegionAnnotation:
                     ]
                 )
                 ia = self.polygon.intersection(patch_polygon).area
-                if ia > ps * ps * self._region_intersection:
-                    res.append((y, x))
+                if ia > ps * ps * region_intersection:
+                    coords.append((y, x))
                     break
                 else:
                     n_miss += 1
@@ -93,10 +141,10 @@ class RegionAnnotation:
                 raise RuntimeError(
                     "Miss limit reached. Probably region is too small."
                 )
-        return res
+        return coords
 
 
-class RegionRandomBatchedDataset:
+class AnnotatedRegionSampler:
 
     def __init__(
         self,
@@ -121,10 +169,19 @@ class RegionRandomBatchedDataset:
         super().__init__()
 
     def _parse_annotations(self) -> None:
+        """
+        Parse annotation files and extract regions.
+
+        This method parses annotation files and for each one extracts regions
+        and stores them in self._regions. It also calculates the total area of
+        each class and stores it in self._areas_per_cls.
+
+        Returns: None
+        """
         self._regions = dict()
         regions_failed = 0
         for psim_path, anno_path in tqdm(
-            self.img_anno_paths, "parsing annotations"
+            self.img_anno_paths, "Parsing annotations"
         ):
             with PSImage(psim_path) as psim:
                 with open(anno_path) as anno_f:
@@ -146,7 +203,6 @@ class RegionRandomBatchedDataset:
                                 layer=self.layer,
                                 layer_size=psim.layer_size(self.layer),
                                 patch_size=self.patch_size,
-                                region_intersection=self.region_intersection,
                             )
                             if cls not in self._regions:
                                 self._regions[cls] = [reg]
@@ -161,7 +217,7 @@ class RegionRandomBatchedDataset:
             cls: sum([i.area for i in regions])
             for cls, regions in self._regions.items()
         }
-        print("Total area:")
+        print("Total area per class:")
         for cls in self._areas_per_cls:
             size_gpx = round(self._areas_per_cls[cls] / 1e9, 2)
             size_prc = round(
@@ -173,6 +229,17 @@ class RegionRandomBatchedDataset:
             print(f"\t{cls}: {size_gpx} Gpx ({size_prc}%)")
 
     def _calc_region_weights(self, area_influence: float) -> None:
+        """
+        Calculate weights for each region based on their area and
+        influence factor.
+
+        Args:
+            area_influence: Influence of region area on weights. If 0, equal
+            weights are assigned to all regions. If > 0, larger regions get
+            more weight. If < 0, smaller regions get more weight.
+
+        Returns: None
+        """
         assert -1 <= area_influence <= 1
         self._weights = dict()
         for cls, regions in self._regions.items():
@@ -198,9 +265,25 @@ class RegionRandomBatchedDataset:
     def _patches_one_region(
         self, region: RegionAnnotation, n: int
     ) -> list[Patch]:
+        """
+        Extract patches from a region.
+
+        Given a region, extract n patches from it using its internal
+        random generator. The patches are extracted in the order of
+        their y and x coordinates.
+
+        Args:
+            region (RegionAnnotation): Annotation of the region.
+            n (int): Number of patches to extract.
+
+        Returns:
+            list[Patch]: Patches extracted from the region.
+        """
         with PSImage(region.file_path) as psim:
             try:
-                coords = region._extract_patch_coords(n)
+                coords = region._extract_patch_coords(
+                    n, region_intersection=self.region_intersection
+                )
                 return [
                     Patch(
                         self.layer,
@@ -221,7 +304,21 @@ class RegionRandomBatchedDataset:
             except Exception:
                 pass
 
-    def _patches_single_proc(self, n: int) -> list[tuple[Patch, int]]:
+    def _gen_single_proc(self, n: int) -> list[tuple[Patch, int]]:
+        """
+        Generate patches from regions for one process.
+
+        Generate n patches from all regions, using the weights calculated
+        in _calc_region_weights. The patches are generated one by one, and
+        the process is repeated until n patches are generated.
+
+        Args:
+            n (int): Number of patches to generate.
+
+        Returns:
+            list[tuple[Patch, int]]: List of tuples containing a Patch and its
+            class index.
+        """
         res = []
         while len(res) < n:
             try:
@@ -239,55 +336,148 @@ class RegionRandomBatchedDataset:
                 continue
         return res
 
-    def _patches_single_proc_torch(
-        self, n_patches: int, k: int
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        f, l, c = [], [], []
-        for _ in range(k):
-            r = self._patches_single_proc(n_patches)
-            features = torch.Tensor(np.stack([p.data for p, i in r]))
-            labels = torch.Tensor([i for p, i in r])
-            coords = torch.Tensor(
-                np.stack([np.array([p.pos_y, p.pos_x]) for p, i in r])
+    def _gen_single_proc_torch(
+        self, n: int
+    ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        """
+        Generate a list of tensors containing patch data, class indices,
+        and coordinates.
+
+        This function generates a specified number of patches using the
+        internal `_gen_single_proc` method. Each patch is converted into a
+        tuple of tensors containing the patch's normalized data, its class
+        index, and its (y, x) coordinates.
+
+        Args:
+            n (int): Number of patches to generate.
+
+        Returns:
+            list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]: A list of
+            tuples, each containing tensors for the patch's features, label,
+            and coordinates.
+        """
+
+        res = []
+        series = self._gen_single_proc(n)
+        for patch, idx in series:
+            features = torch.tensor(patch.data, dtype=torch.float32) / 255
+            labels = torch.tensor(idx, dtype=torch.float32)
+            coords = torch.tensor(
+                [patch.pos_y, patch.pos_x], dtype=torch.float32
             )
-            f.append(features)
-            l.append(labels)
-            c.append(coords)
-        return f, l, c
+            res.append((features, labels, coords))
+        return res
+
+    def _split_chunks(self, n, k):
+        """
+        Split n items into chunks of size k, with the last chunk potentially
+        being smaller.
+
+        Args:
+            n (int): Number of items to split.
+            k (int): Size of each chunk.
+
+        Returns:
+            list[int]: List of chunk sizes.
+        """
+        q = [k] * (n // k)
+        if n % k > 0:
+            q.append(n % k)
+        return q
 
     def generator(
-        self, n_batches: int, max_workers: int = None
+        self,
+        n_batches: int,
+        batches_per_worker: int = 2,
+        max_workers: int = None,
     ) -> Iterator[tuple[Patch, int]]:
+        """
+        Generate batches of patches and labels in parallel.
+
+        This method uses the internal `_gen_single_proc` method to generate
+        batches of patches and labels. The required number of batches is split
+        between worker processes, which are executed in parallel using a
+        `ProcessPoolExecutor`. The results are then yielded in chunks of
+        `self.batch_size`.
+
+        Args:
+            n_batches (int): Number of batches to generate.
+            batches_per_worker (int): Number of batches to generate per worker
+                process.
+            max_workers (int): Maximum number of worker processes to spawn.
+                Defaults to `None`, which means that the number of workers is
+                determined by the `ProcessPoolExecutor`.
+
+        Yields:
+            tuple[Patch, int]: A tuple containing a list of patches and their
+                corresponding labels.
+        """
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # split required number of batches between workers
+            q = self._split_chunks(n_batches, batches_per_worker)
             futures = [
-                executor.submit(self._patches_single_proc, self.batch_size)
-                for _ in range(n_batches)
+                executor.submit(self._gen_single_proc, self.batch_size * i)
+                for i in q
             ]
             for future in futures:
-                r = future.result()
-                yield r
+                lst = future.result()
+                for i in range(0, len(lst), self.batch_size):
+                    yield lst[i : i + self.batch_size]
 
     def generator_torch(
         self,
         n_batches: int,
+        batches_per_worker: int = 2,
         transforms: callable = None,
         max_workers: int = None,
-        factor: int = 2,
     ) -> Iterator[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        """
+        Generate batches of patches and labels in parallel using torch Tensors.
+
+        This method uses the internal `_gen_single_proc_torch` method to
+        generate batches of patches and labels. The required number of batches
+        is split between worker processes, which are executed in parallel
+        using a `ProcessPoolExecutor`. The results are then yielded in chunks
+        of `self.batch_size`.
+
+        Args:
+            n_batches (int): Number of batches to generate.
+            batches_per_worker (int): Number of batches to generate per worker
+                process. Defaults to 2.
+            transforms (callable): Optional transforms to apply to the patch
+                features. Defaults to `None`.
+            max_workers (int): Maximum number of worker processes to spawn.
+                Defaults to `None`, which means that the number of workers is
+                determined by the `ProcessPoolExecutor`.
+
+        Yields:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing
+                tensors for the features, label, and coordinates
+                (all stacked in batches).
+        """
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # split required number of batches between workers
+            q = self._split_chunks(n_batches, batches_per_worker)
             futures = [
                 executor.submit(
-                    self._patches_single_proc_torch, self.batch_size, factor
+                    self._gen_single_proc_torch, self.batch_size * i
                 )
-                for _ in range(n_batches // factor)
+                for i in q
             ]
             for future in futures:
-                f, l, c = future.result()
-                for ff, ll, cc in zip(f, l, c):
+                lst = future.result()
+                for i in range(0, len(lst), self.batch_size):
+                    batch_elements = lst[i : i + self.batch_size]
+                    features = torch.stack([e[0] for e in batch_elements])
+                    labels = torch.stack([e[1] for e in batch_elements])
+                    coords = torch.stack([e[2] for e in batch_elements])
                     if transforms is not None:
-                        ff = transforms(ff)
-                    yield (ff, ll, cc)
+                        features = transforms(features)
+                    yield features, labels, coords
 
     def __len__(self):
+        """
+        Returns the approximate number of patches in the dataset.
+        """
         ps = self.patch_size * self.layer
         return int(sum(self._areas_per_cls.values()) / (ps * ps))

@@ -12,7 +12,7 @@ from psimage.patches import Patch
 import torch
 
 
-class RandomSamplerBatched:
+class FullImageRandomSampler:
 
     def __init__(
         self,
@@ -226,7 +226,7 @@ class RandomSamplerBatched:
             im.save("_" + name, quality=98)
 
 
-class DenseSamplerBatched:
+class FullImageDenseSampler:
 
     def __init__(
         self,
@@ -321,8 +321,15 @@ class DenseSamplerBatched:
         self,
     ) -> Iterator[tuple[torch.Tensor, torch.Tensor, float]]:
         for patches, filled_ratio in self.generator():
-            features = torch.Tensor(np.stack([p.data for p in patches]))
-            coords = torch.Tensor(
-                np.stack([np.array([p.pos_y, p.pos_x]) for p in patches])
+            features = torch.tensor(
+                np.stack([p.data for p in patches]).astype(np.float32) / 255
+            )
+            coords = torch.tensor(
+                np.stack(
+                    [
+                        np.array([p.pos_y, p.pos_x], dtype=np.float32)
+                        for p in patches
+                    ]
+                )
             )
             yield features, coords, filled_ratio

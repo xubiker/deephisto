@@ -9,7 +9,7 @@ from psimage.patches import Patch
 from tqdm import tqdm
 
 from anno.utils import AnnoDescription
-from patch_samplers.wsi_samplers import DenseSamplerBatched
+from patch_samplers.full_samplers import FullImageDenseSampler
 
 
 class ImagePredictorPatched:
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     #     }
     # )
 
-    patch_sampler = DenseSamplerBatched(
+    patch_sampler = FullImageDenseSampler(
         img_path, layer=2, patch_size=224, batch_size=16, stride=112
     )
 

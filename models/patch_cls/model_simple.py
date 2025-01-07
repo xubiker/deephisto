@@ -9,7 +9,7 @@ from sklearn.metrics import balanced_accuracy_score, accuracy_score
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from patch_samplers.region_samplers import RegionRandomBatchedDataset
+from patch_samplers.region_samplers import AnnotatedRegionSampler
 
 
 def _img_ano_paths(sample: str = "train"):
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         ]
     )
 
-    train_dataset = RegionRandomBatchedDataset(
+    train_dataset = AnnotatedRegionSampler(
         _img_ano_paths(),
         patch_size=224,
         batch_size=batch_size,
