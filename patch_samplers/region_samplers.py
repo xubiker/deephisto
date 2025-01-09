@@ -1,3 +1,4 @@
+from collections import defaultdict
 import json
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -206,9 +207,12 @@ def _parse_annotations(
     Raises:
         ValueError: If the region is too small.
     """
-    regions = dict()
+    regions_all = defaultdict(list)
+    regions_per_image = [defaultdict(list) for _ in img_anno_paths]
     regions_failed = 0
-    for psim_path, anno_path in tqdm(img_anno_paths, "Parsing annotations"):
+    for j, (psim_path, anno_path) in enumerate(
+        tqdm(img_anno_paths, "Parsing annotations")
+    ):
         with PSImage(psim_path) as psim:
             with open(anno_path) as anno_f:
                 for i, a in enumerate(json.load(anno_f)):
@@ -224,15 +228,25 @@ def _parse_annotations(
                             layer=layer,
                             layer_size=psim.layer_size(layer),
                         )
-                        if cls not in regions:
-                            regions[cls] = [reg]
-                        else:
-                            regions[cls].append(reg)
+                        # add region to image dictionary
+                        regions_per_image[j][cls].append(reg)
+                        # add region to united dictionary
+                        regions_all[cls].append(reg)
                     except Exception:
                         regions_failed += 1
+
     if regions_failed > 0:
         print(f"Failed to parse {regions_failed} regions.")
-    return regions
+
+    l = {cls: len(r) for cls, r in regions_all.items()}
+    print(f"regions all: {l}")
+
+    print("regions per image:")
+    for i, rpi in enumerate(regions_per_image):
+        l = {cls: len(r) for cls, r in rpi.items()}
+        print(f"\timage {i}: {l}")
+
+    return regions_all, regions_per_image
 
 
 class AnnoRegionRndSampler:
@@ -246,6 +260,7 @@ class AnnoRegionRndSampler:
         patches_from_one_region: int = 4,
         region_area_influence: float = 0.5,
         classes: list[str] = None,
+        one_image_for_batch: bool = False,
     ):
         """
         Initialize an AnnoRegionRndSampler object.
@@ -272,6 +287,9 @@ class AnnoRegionRndSampler:
             classes: list[str], optional
                 A list of class labels to be used. If None, all classes are
                 used. Defaults to None.
+            one_image_for_batch: bool, optional
+                If True, each batch will contain patches from only one image.
+                Defaults to False.
 
         """
         self.img_anno_paths = img_anno_paths
@@ -279,15 +297,18 @@ class AnnoRegionRndSampler:
         self.patch_size = patch_size
         self.region_intersection = region_intersection
         self.patches_from_one_region = patches_from_one_region
+        self.region_area_influence = region_area_influence
         self.classes = classes
-        self.regions = _parse_annotations(
+        self.one_image_for_batch = one_image_for_batch
+        self.regions, self.regions_per_image = _parse_annotations(
             img_anno_paths, layer=layer, classes=classes
         )
         self.classes = sorted(list(self.regions.keys()))
         self._print_anno_stats(self.regions)
-        self._weights = self._calc_region_weights(
-            self.regions, region_area_influence
+        self._reg_w_all, self._reg_w_per_img, self._img_w, self._img_w_all = (
+            self._calc_weights(self.regions, self.regions_per_image)
         )
+        # self._print_weights(self._reg_w_all, self._reg_w_per_img, self._img_w)
         self._set_mp()
 
     def _set_mp(self):
@@ -315,42 +336,150 @@ class AnnoRegionRndSampler:
             print(f"\t{cls}: {size_gpx} Gpx ({size_prc}%)")
         print(f"Approximate number of patches in dataset: {len(self)}")
 
-    def _calc_region_weights(
-        self, regions: dict[str, list[RegionAnnotation]], area_influence: float
-    ) -> dict[str, np.ndarray]:
+    def _calc_area_weights(
+        self, areas: list[float], area_influence: float
+    ) -> list[np.ndarray]:
         """
-        Calculate weights for each region based on their area and
-        influence factor.
+        Calculate the weights for each region based on their areas.
 
-        Args:
-            area_influence: Influence of region area on weights. If 0, equal
-            weights are assigned to all regions. If > 0, larger regions get
-            more weight. If < 0, smaller regions get more weight.
+        The influence of the region area on the weights is controlled by the
+        `area_influence` parameter. If 0, equal weights are assigned to all
+        regions. If > 0, larger regions get more weight. If < 0, smaller regions
+        get more weight.
 
-        Returns: None
+        Parameters
+        ----------
+        areas : list[float]
+            A list of region areas.
+        area_influence : float
+            The influence of the region area on the weights.
+
+        Returns
+        -------
+        list[np.ndarray]
+            A list of weights for regions.
         """
         assert -1 <= area_influence <= 1
-        weights = dict()
-        for cls, regions in regions.items():
-            areas = [r.area for r in regions]
-            areas_inv = [1 / a for a in areas]
-            w_proportional = np.array(areas) / sum(areas)
-            w_inv_proportional = np.array(areas_inv) / sum(areas_inv)
-            w_default = np.ones(len(regions), dtype=np.float64) / len(regions)
+        areas_inv = [1 / a for a in areas]
+        w_proportional = np.array(areas) / sum(areas)
+        w_inv_proportional = np.array(areas_inv) / sum(areas_inv)
+        w_default = np.ones(len(areas), dtype=np.float64) / len(areas)
 
-            if area_influence == 0:
-                w = w_default
-            elif area_influence > 0:
-                delta = (w_proportional - w_default) * area_influence
-                w = w_default + delta
-                w = w / sum(w)
-            elif area_influence < 0:
-                delta = (w_inv_proportional - w_default) * (-area_influence)
-                w = w_default + delta
-                w = w / sum(w)
+        if area_influence == 0:
+            w = w_default
+        elif area_influence > 0:
+            delta = (w_proportional - w_default) * area_influence
+            w = w_default + delta
+            w = w / sum(w)
+        elif area_influence < 0:
+            delta = (w_inv_proportional - w_default) * (-area_influence)
+            w = w_default + delta
+            w = w / sum(w)
+        return w
 
-            weights[cls] = w
-        return weights
+    def _print_weights(
+        self, reg_weights_all, reg_weights_per_img, img_weights
+    ):
+        print("reg_w_all")
+        for cls, weigts in reg_weights_all.items():
+            print(f"\t{cls}: {len(weigts)} items")
+        print("reg_w_per_img")
+        for i in range(len(self.img_anno_paths)):
+            print(f"\t image {i}:")
+            for cls, weigts in reg_weights_per_img[i].items():
+                print(f"\t\t{cls}: {weigts}")
+        print("img_w")
+        for cls, weights in img_weights.items():
+            print(f"\t{cls}: {weights}")
+
+    def _calc_weights(
+        self,
+        regions: dict[str, list[RegionAnnotation]],
+        regions_per_image: list[dict[str, list[RegionAnnotation]]],
+    ) -> tuple:
+        """
+        Calculate the weights for each region and each image based on their areas.
+
+        Parameters
+        ----------
+        regions : dict[str, list[RegionAnnotation]]
+            A dictionary where each key is a class label and the value is a list
+            of RegionAnnotation objects associated with that label.
+        regions_per_image : list[dict[str, list[RegionAnnotation]]]
+            {A list of dictionaries where each key is a class label and the value
+            is a list of RegionAnnotation objects associated with that label} for
+            each image.
+
+        Returns
+        -------
+        tuple
+            A tuple of three dictionaries:
+
+            reg_weights_all : dict[str, list[float]]
+                A dictionary where each key is a class label and the value is a
+                list of weights for regions of that class.
+            reg_weights_per_img : list[dict[str, list[float]]]
+                {A list of dictionaries where each key is a class label and the
+                value is a list of weights for regions of that class} for each
+                image.
+            img_weights : dict[str, np.ndarray]
+                A dictionary where each key is a class label and the value is a
+                numpy array of weights for images.
+            img_weights_all: np.ndarray
+                A numpy array of weights for all images corresponding to the
+                area of annotated regions on each image.
+        """
+
+        # calculate weights of regions corresponding to class
+        # cls -> [weights] * n_regions_for_class
+        reg_weights_all = {
+            cls: self._calc_area_weights(
+                [r.area for r in reg], self.region_area_influence
+            )
+            for cls, reg in regions.items()
+        }
+
+        # calculate weights of regions corresponding to class for each image
+        # [cls -> [weights] * n_regions_for_class_on_image] * n_images
+        reg_weights_per_img = []
+        for regions in regions_per_image:
+            w = {
+                cls: self._calc_area_weights(
+                    [r.area for r in reg], self.region_area_influence
+                )
+                for cls, reg in regions.items()
+            }
+            reg_weights_per_img.append(w)
+
+        # calculate weights of images corresponding to class
+        # cls -> [weights] * n_images
+        img_weights = dict()
+        for cls in self.classes:
+            # for all images extract only regions of the desired class
+            regs_per_image = [
+                regions[cls] if cls in regions else []
+                for regions in regions_per_image
+            ]
+            a = np.array(
+                [sum([r.area for r in regs]) for regs in regs_per_image]
+            )
+            img_weights[cls] = a / np.sum(a)
+
+        # calculate weights of images corresponding to the area of annotated regions
+        all_regs_areas_per_image = [
+            sum([sum([j.area for j in i]) for i in r.values()])
+            for r in regions_per_image
+        ]
+        img_weights_all = self._calc_area_weights(
+            all_regs_areas_per_image, self.region_area_influence
+        )
+
+        return (
+            reg_weights_all,
+            reg_weights_per_img,
+            img_weights,
+            img_weights_all,
+        )
 
     def _patches_one_region(
         self, region: RegionAnnotation, n: int
@@ -413,24 +542,52 @@ class AnnoRegionRndSampler:
             class index.
         """
         res = []
-        while len(res) < n:
-            try:
-                idx = (
-                    np.random.randint(len(self.classes))
-                    if cls_idx is None
-                    else cls_idx
-                )
-                cls = self.classes[idx]
-                region: RegionAnnotation = np.random.choice(
-                    self.regions[cls],
-                    p=self._weights[cls],
-                )
-                k = min(self.patches_from_one_region, n - len(res))
-                res.extend(
-                    [(p, idx) for p in self._patches_one_region(region, k)]
-                )
-            except Exception:
-                continue
+        if self.one_image_for_batch:
+            img_idx = np.random.choice(
+                len(self.img_anno_paths), p=self._img_w_all
+            )
+            # get classes for selected img (image annotation may not have all classes)
+            classes_for_img = self._reg_w_per_img[img_idx].keys()
+            classes_idx = [self.classes.index(cls) for cls in classes_for_img]
+            while len(res) < n:
+                try:
+                    # select class
+                    c_idx = cls_idx or np.random.choice(classes_idx)
+                    cls = self.classes[c_idx]
+                    if cls not in classes_for_img:
+                        raise Exception(f"Class {cls} not found in image")
+                    # select region
+                    region: RegionAnnotation = np.random.choice(
+                        self.regions_per_image[img_idx][cls],
+                        p=self._reg_w_per_img[img_idx][cls],
+                    )
+                    k = min(self.patches_from_one_region, n - len(res))
+                    res.extend(
+                        [
+                            (p, c_idx)
+                            for p in self._patches_one_region(region, k)
+                        ]
+                    )
+                except Exception:
+                    continue
+        else:
+            while len(res) < n:
+                try:
+                    c_idx = cls_idx or np.random.randint(len(self.classes))
+                    cls = self.classes[c_idx]
+                    region: RegionAnnotation = np.random.choice(
+                        self.regions[cls],
+                        p=self._reg_w_all[cls],
+                    )
+                    k = min(self.patches_from_one_region, n - len(res))
+                    res.extend(
+                        [
+                            (p, c_idx)
+                            for p in self._patches_one_region(region, k)
+                        ]
+                    )
+                except Exception:
+                    continue
         return res
 
     def _gen_single_proc_torch(
@@ -457,7 +614,7 @@ class AnnoRegionRndSampler:
         res = []
         for patch, idx in self._gen_single_proc(n):
             features = torch.tensor(patch.data, dtype=torch.float32) / 255
-            labels = torch.tensor(idx, dtype=torch.uint8)
+            labels = torch.tensor(idx, dtype=torch.int64)
             coords = torch.tensor(
                 [patch.pos_y, patch.pos_x], dtype=torch.float32
             )
@@ -604,7 +761,7 @@ class AnnoRegionRndSampler:
                     cls = self.classes[cls_idx]
                     region: RegionAnnotation = np.random.choice(
                         self.regions[cls],
-                        p=self._weights[cls],
+                        p=self._reg_w_all[cls],
                     )
                     for p in self._patches_one_region(
                         region, self.patches_from_one_region
@@ -676,7 +833,7 @@ class AnnoRegionDenseSampler:
         self.patch_size = patch_size
         self.stride = stride
         self.region_intersection = region_intersection
-        self.regions = _parse_annotations(
+        self.regions, _ = _parse_annotations(
             img_anno_paths, layer=layer, classes=classes
         )
         self.classes = sorted(list(self.regions.keys()))

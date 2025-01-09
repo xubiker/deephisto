@@ -36,7 +36,8 @@ if __name__ == "__main__":
         img_anno_paths,
         patch_size=224,
         layer=1,
-        patches_from_one_region=8,
+        patches_from_one_region=4,
+        one_image_for_batch=True,
     )
 
     t0 = time.time()
@@ -46,7 +47,9 @@ if __name__ == "__main__":
     if args.torch:
         print("Generating batches with torch tensors")
         g = dataset.torch_generator(
-            batch_size=b_size, n_batches=n, batches_per_worker=b_per_worker
+            batch_size=b_size,
+            n_batches=n,
+            batches_per_worker=b_per_worker,
         )
         for f, cls, coords in g:
             print(

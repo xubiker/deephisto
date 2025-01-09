@@ -93,6 +93,7 @@ def train(cfg):
         patch_size=cfg["dataset"]["patch_size"],
         layer=cfg["dataset"]["layer"],
         patches_from_one_region=cfg["dataset"]["patches_from_one_region"],
+        one_image_for_batch=cfg["training"]["one_image_for_batch"],
     )
 
     # train_val_dataset = ImageFolder(
