@@ -15,10 +15,18 @@ Create env:
 
 The examples of using different methods can be found in [examples folder](/examples/).
 
-You can run the scripts with these commands:
-```python -m examples.sample_full_dense```
-```python -m examples.sample_full_random```
+Use  patch samplers to extract patches from annotated regions. Can be used for training classification models.
 ```python -m examples.sample_annotated_dense```
 ```python -m examples.sample_annotated_rnd```
 ```python -m examples.sample_annotated_rnd --torch```
-```python -m examples.predicti_full_dense```
+
+Use patch samplers to extract patches from whole image. Can be random or dense. Is usefull for predicting for the whole image.
+```python -m examples.sample_full_dense```
+```python -m examples.sample_full_random```
+
+Train simlpe patch-based model:
+```python -m models.patch_cls_simple.train```
+```python -m models.patch_cls_simple.train --extract_test```
+
+Make full prediction on WSI image using saved model:
+```python -m examples.predict_full_patched```

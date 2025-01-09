@@ -904,6 +904,6 @@ def extract_and_save_subset(
         for batch in tqdm(g, total=n, desc=f"extracting class {cls}"):
             for patch, cls in batch:
                 Image.fromarray(patch.data).save(
-                    out_folder / str(cls) / f"{count}.jpg"
+                    out_folder / str(cls_idx) / f"{count}.jpg"
                 )
                 count += 1

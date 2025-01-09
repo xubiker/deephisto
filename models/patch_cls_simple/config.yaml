@@ -4,7 +4,7 @@ model:
 training:
   batch_size: 64
   n_epochs: 50
-  lr: 0.001
+  lr: 0.0001
   augment_factor: 2
   save_dir: "./checkpoints"
   out_dir: "./output"
@@ -19,7 +19,7 @@ test:
 
 dataset:
   folder: "/home/xubiker/dev/PATH-DT-MSU.WSS2"
-  layer: 1
+  layer: 2
   patch_size: 224
   batches_per_worker: 2
   patches_from_one_region: 4

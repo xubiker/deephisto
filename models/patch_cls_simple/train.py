@@ -1,4 +1,6 @@
+import argparse
 from pathlib import Path
+import shutil
 
 import matplotlib
 
@@ -40,6 +42,10 @@ def prepare_test_patches(cfg):
     img_anno_paths_test = get_img_ano_paths(
         ds_folder=Path(cfg["dataset"]["folder"]), sample="test"
     )
+
+    out_dir = Path(cfg["test"]["dir"])
+    if out_dir.exists() and out_dir.is_dir():
+        shutil.rmtree(out_dir)
 
     extract_and_save_subset(
         img_anno_paths=img_anno_paths_test,
@@ -297,19 +303,13 @@ def train(cfg):
 
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--extract_test", action="store_true", default=False)
+    args = parser.parse_args()
+
     cfg = utils.load_config(Path("./models/patch_cls_simple/config.yaml"))
 
-    # img_anno_paths_test = get_img_ano_paths(
-    #     ds_folder=Path(cfg["dataset"]["folder"]), sample="train"
-    # )
+    if args.extract_test:
+        prepare_test_patches(cfg)
 
-    # extract_and_save_subset(
-    #     img_anno_paths=img_anno_paths_test,
-    #     out_folder=Path("./data"),
-    #     patch_size=cfg["dataset"]["patch_size"],
-    #     layer=cfg["dataset"]["layer"],
-    #     patches_per_class=3000,
-    # )
-
-    # prepare_test_patches(cfg)
     train(cfg)
