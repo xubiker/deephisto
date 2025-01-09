@@ -4,7 +4,7 @@ Example of using FullImageRandomSampler.
 
 from pathlib import Path
 
-from patch_samplers.full_samplers import FullImageRandomSampler
+from patch_samplers.full_samplers import FullImageRndSampler
 
 
 if __name__ == "__main__":
@@ -13,7 +13,7 @@ if __name__ == "__main__":
         "/Users/xubiker/dev/PATH-DT-MSU.WSS1/images/test/test_01.psi"
     )
 
-    patch_sampler = FullImageRandomSampler(
+    patch_sampler = FullImageRndSampler(
         img_path, layer=2, patch_size=224, batch_size=16
     )
 

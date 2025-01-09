@@ -1,16 +1,17 @@
+import json
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import Iterator
 
 import numpy as np
-from shapely import Polygon
 import torch
-from tqdm import tqdm
-
 from psimage import PSImage
 from psimage.patches import Patch
+from shapely import Polygon
+from tqdm import tqdm
+
+from torch.utils.data import IterableDataset
 
 
 @dataclass
@@ -31,7 +32,6 @@ class RegionAnnotation:
         vertices: np.ndarray,
         layer: int,
         layer_size: tuple[int, int],
-        patch_size: int,
     ):
         """
         Create a RegionAnnotation object.
@@ -49,8 +49,6 @@ class RegionAnnotation:
                 Layer of the image where the region is located.
             layer_size : tuple[int, int]
                 Size of the layer.
-            patch_size : int
-                Size of the patches to be extracted from the region.
 
         Raises:
             RuntimeError: If the region has invalid shape or dtype.
@@ -61,7 +59,6 @@ class RegionAnnotation:
         self.vertices = vertices
         self._layer = layer
         self._layer_size = layer_size
-        self._patch_size = patch_size
 
         if len(vertices.shape) != 2 or vertices.shape[1] != 2:
             raise RuntimeError("Invalid region shape. It should be (N, 2).")
@@ -81,8 +78,9 @@ class RegionAnnotation:
             f"{self.class_}, {self.vertices.shape}, {round(self.area, 0)}]"
         )
 
-    def _extract_patch_coords(
+    def _extract_patch_coords_rnd(
         self,
+        patch_size: int,
         n_patches: int,
         region_intersection: float = 0.75,
         miss_limit: int = 500,
@@ -112,7 +110,7 @@ class RegionAnnotation:
             reached without finding enough suitable patches.
         """
 
-        ps = self._patch_size
+        ps = patch_size
         h, w = self._layer_size
         x0, y0, x1, y1 = self.polygon.bounds
         if self.area < ps * ps * region_intersection:
@@ -143,92 +141,183 @@ class RegionAnnotation:
                 )
         return coords
 
+    def _extract_patch_coords_dense(
+        self,
+        patch_size: int,
+        stride: int,
+        region_intersection: float = 0.75,
+    ) -> list[tuple[int, int]]:
+        """
+        Extract a list of coordinates for patches of size `patch_size` that
+        lie within the region defined by the annotated polygon.
 
-class AnnotatedRegionSampler:
+        The `stride` parameter determines the spacing between patch centers.
+        The `region_intersection` parameter determines the minimum fraction of
+        the patch area that must lie within the region in order for the patch
+        to be included in the output.
+
+        The coordinates are returned as a list of (y, x) tuples, where y and x
+        are the coordinates of the top-left corner of the patch.
+
+        :param patch_size: The size of the patches to extract.
+        :param stride: The spacing between patch centers.
+        :param region_intersection: The minimum fraction of the patch area
+            that must lie within the region in order for the patch to be
+            included in the output.
+        :return: A list of (y, x) tuples, where y and x are the coordinates of
+            the top-left corner of the patch.
+        """
+        ps = patch_size
+        h, w = self._layer_size
+        x0, y0, x1, y1 = self.polygon.bounds
+        x0, y0, x1, y1 = round(x0), round(y0), round(x1), round(y1)
+        x1 = min(x1, w - patch_size)
+        y1 = min(y1, h - patch_size)
+        coords = []
+        for y in range(y0, y1, stride):
+            for x in range(x0, x1, stride):
+                patch_polygon = Polygon(
+                    [
+                        (x, y),
+                        (x + ps, y),
+                        (x + ps, y + ps),
+                        (x, y + ps),
+                    ]
+                )
+                ia = self.polygon.intersection(patch_polygon).area
+                if ia > patch_size * patch_size * region_intersection:
+                    coords.append((y, x))
+        return coords
+
+
+def _parse_annotations(
+    img_anno_paths: list[tuple[Path, Path]],
+    layer: int,
+    classes: list[str] = None,
+) -> dict[str, list[RegionAnnotation]]:
+    """
+    Parse annotations from the given image-annotation path pairs.
+
+    Returns:
+        dict[str, list[RegionAnnotation]]: A dictionary where each key is a
+            class label and the value is a list of RegionAnnotation objects
+            associated with that label.
+
+    Raises:
+        ValueError: If the region is too small.
+    """
+    regions = dict()
+    regions_failed = 0
+    for psim_path, anno_path in tqdm(img_anno_paths, "Parsing annotations"):
+        with PSImage(psim_path) as psim:
+            with open(anno_path) as anno_f:
+                for i, a in enumerate(json.load(anno_f)):
+                    cls = a["class"]
+                    if classes is not None and cls not in classes:
+                        continue
+                    try:
+                        reg = RegionAnnotation(
+                            img_path=psim_path,
+                            region_idx=i,
+                            class_=cls,
+                            vertices=np.array(a["vertices"], dtype=np.float64),
+                            layer=layer,
+                            layer_size=psim.layer_size(layer),
+                        )
+                        if cls not in regions:
+                            regions[cls] = [reg]
+                        else:
+                            regions[cls].append(reg)
+                    except Exception:
+                        regions_failed += 1
+    if regions_failed > 0:
+        print(f"Failed to parse {regions_failed} regions.")
+    return regions
+
+
+class AnnoRegionRndSampler:
 
     def __init__(
         self,
         img_anno_paths: list[tuple[Path, Path]],
         layer: int,
         patch_size: int,
-        batch_size: int,
         region_intersection: float = 0.75,
         patches_from_one_region: int = 4,
         region_area_influence: float = 0.5,
         classes: list[str] = None,
     ):
+        """
+        Initialize an AnnoRegionRndSampler object.
+
+        Args:
+            img_anno_paths: list[tuple[Path, Path]]
+                A list of tuples containing the paths to the images and their
+                corresponding annotations.
+            layer: int
+                The layer of image to extract patches from.
+            patch_size: int
+                The size of the patches to be extracted.
+            region_intersection: float, optional
+                The minimum fraction of the patch area that must lie within the
+                region in order for the patch to be included in the output.
+                Defaults to 0.75.
+            patches_from_one_region: int, optional
+                The number of patches to extract from each region. Defaults to 4.
+            region_area_influence: float, optional
+                The influence of the region area on the weights. If 0, equal
+                weights are assigned to all regions. If > 0, larger regions get
+                more weight. If < 0, smaller regions get more weight. Defaults to
+                0.5.
+            classes: list[str], optional
+                A list of class labels to be used. If None, all classes are
+                used. Defaults to None.
+
+        """
         self.img_anno_paths = img_anno_paths
         self.layer = layer
         self.patch_size = patch_size
-        self.batch_size = batch_size
         self.region_intersection = region_intersection
         self.patches_from_one_region = patches_from_one_region
         self.classes = classes
-        self._parse_annotations()
-        self._calc_region_weights(region_area_influence)
-        super().__init__()
+        self.regions = _parse_annotations(
+            img_anno_paths, layer=layer, classes=classes
+        )
+        self.classes = sorted(list(self.regions.keys()))
+        self._print_anno_stats(self.regions)
+        self._weights = self._calc_region_weights(
+            self.regions, region_area_influence
+        )
+        self._set_mp()
 
-    def _parse_annotations(self) -> None:
+    def _set_mp(self):
         """
-        Parse annotation files and extract regions.
-
-        This method parses annotation files and for each one extracts regions
-        and stores them in self._regions. It also calculates the total area of
-        each class and stores it in self._areas_per_cls.
-
-        Returns: None
+        ! Used in order to avoid conflicts with pytorch !
+        Use the spawn or forkserver start method instead of the default fork.
+        These method reinitialize the child process in a clean state.
+        Should be called before creating ProcessPoolExecutor.
         """
-        self._regions = dict()
-        regions_failed = 0
-        for psim_path, anno_path in tqdm(
-            self.img_anno_paths, "Parsing annotations"
-        ):
-            with PSImage(psim_path) as psim:
-                with open(anno_path) as anno_f:
-                    for i, a in enumerate(json.load(anno_f)):
-                        cls = a["class"]
-                        if (
-                            self.classes is not None
-                            and cls not in self.classes
-                        ):
-                            continue
-                        try:
-                            reg = RegionAnnotation(
-                                img_path=psim_path,
-                                region_idx=i,
-                                class_=cls,
-                                vertices=np.array(
-                                    a["vertices"], dtype=np.float64
-                                ),
-                                layer=self.layer,
-                                layer_size=psim.layer_size(self.layer),
-                                patch_size=self.patch_size,
-                            )
-                            if cls not in self._regions:
-                                self._regions[cls] = [reg]
-                            else:
-                                self._regions[cls].append(reg)
-                        except Exception:
-                            regions_failed += 1
-        if regions_failed > 0:
-            print(f"Failed to parse {regions_failed} regions.")
-        self.classes = sorted(list(self._regions.keys()))
-        self._areas_per_cls = {
-            cls: sum([i.area for i in regions])
-            for cls, regions in self._regions.items()
+        import multiprocessing as mp
+
+        mp.set_start_method("spawn", force=True)
+
+    def _print_anno_stats(self, regions: dict[str, list[RegionAnnotation]]):
+        areas_per_cls = {
+            cls: sum([i.area for i in regs]) for cls, regs in regions.items()
         }
         print("Total area per class:")
-        for cls in self._areas_per_cls:
-            size_gpx = round(self._areas_per_cls[cls] / 1e9, 2)
+        for cls in areas_per_cls:
+            size_gpx = round(areas_per_cls[cls] / 1e9, 2)
             size_prc = round(
-                self._areas_per_cls[cls]
-                / sum(self._areas_per_cls.values())
-                * 100,
+                areas_per_cls[cls] / sum(areas_per_cls.values()) * 100,
                 2,
             )
             print(f"\t{cls}: {size_gpx} Gpx ({size_prc}%)")
+        print(f"Approximate number of patches in dataset: {len(self)}")
 
-    def _calc_region_weights(self, area_influence: float) -> None:
+    def _calc_region_weights(
+        self, regions: dict[str, list[RegionAnnotation]], area_influence: float
+    ) -> dict[str, np.ndarray]:
         """
         Calculate weights for each region based on their area and
         influence factor.
@@ -241,8 +330,8 @@ class AnnotatedRegionSampler:
         Returns: None
         """
         assert -1 <= area_influence <= 1
-        self._weights = dict()
-        for cls, regions in self._regions.items():
+        weights = dict()
+        for cls, regions in regions.items():
             areas = [r.area for r in regions]
             areas_inv = [1 / a for a in areas]
             w_proportional = np.array(areas) / sum(areas)
@@ -260,7 +349,8 @@ class AnnotatedRegionSampler:
                 w = w_default + delta
                 w = w / sum(w)
 
-            self._weights[cls] = w
+            weights[cls] = w
+        return weights
 
     def _patches_one_region(
         self, region: RegionAnnotation, n: int
@@ -280,31 +370,32 @@ class AnnotatedRegionSampler:
             list[Patch]: Patches extracted from the region.
         """
         with PSImage(region.file_path) as psim:
-            try:
-                coords = region._extract_patch_coords(
-                    n, region_intersection=self.region_intersection
-                )
-                return [
-                    Patch(
+            coords = region._extract_patch_coords_rnd(
+                n_patches=n,
+                patch_size=self.patch_size,
+                region_intersection=self.region_intersection,
+            )
+            return [
+                Patch(
+                    self.layer,
+                    pos_x=c[1],
+                    pos_y=c[0],
+                    patch_size=self.patch_size,
+                    data=psim.get_region_from_layer(
                         self.layer,
-                        pos_x=c[1],
-                        pos_y=c[0],
-                        patch_size=self.patch_size,
-                        data=psim.get_region_from_layer(
-                            self.layer,
-                            c,
-                            (
-                                c[0] + self.patch_size,
-                                c[1] + self.patch_size,
-                            ),
+                        c,
+                        (
+                            c[0] + self.patch_size,
+                            c[1] + self.patch_size,
                         ),
-                    )
-                    for c in coords
-                ]
-            except Exception:
-                pass
+                    ),
+                )
+                for c in coords
+            ]
 
-    def _gen_single_proc(self, n: int) -> list[tuple[Patch, int]]:
+    def _gen_single_proc(
+        self, n: int, cls_idx: int = None
+    ) -> list[tuple[Patch, int]]:
         """
         Generate patches from regions for one process.
 
@@ -314,6 +405,8 @@ class AnnotatedRegionSampler:
 
         Args:
             n (int): Number of patches to generate.
+            cls_idx (int): Index of the class to generate patches for. If not
+            provided, patches from all classes are generated.
 
         Returns:
             list[tuple[Patch, int]]: List of tuples containing a Patch and its
@@ -322,15 +415,19 @@ class AnnotatedRegionSampler:
         res = []
         while len(res) < n:
             try:
-                cls_idx = np.random.randint(len(self.classes))
-                cls = self.classes[cls_idx]
+                idx = (
+                    np.random.randint(len(self.classes))
+                    if cls_idx is None
+                    else cls_idx
+                )
+                cls = self.classes[idx]
                 region: RegionAnnotation = np.random.choice(
-                    self._regions[cls],
+                    self.regions[cls],
                     p=self._weights[cls],
                 )
                 k = min(self.patches_from_one_region, n - len(res))
                 res.extend(
-                    [(p, cls_idx) for p in self._patches_one_region(region, k)]
+                    [(p, idx) for p in self._patches_one_region(region, k)]
                 )
             except Exception:
                 continue
@@ -358,10 +455,9 @@ class AnnotatedRegionSampler:
         """
 
         res = []
-        series = self._gen_single_proc(n)
-        for patch, idx in series:
+        for patch, idx in self._gen_single_proc(n):
             features = torch.tensor(patch.data, dtype=torch.float32) / 255
-            labels = torch.tensor(idx, dtype=torch.float32)
+            labels = torch.tensor(idx, dtype=torch.uint8)
             coords = torch.tensor(
                 [patch.pos_y, patch.pos_x], dtype=torch.float32
             )
@@ -385,11 +481,13 @@ class AnnotatedRegionSampler:
             q.append(n % k)
         return q
 
-    def generator(
+    def structs_generator(
         self,
+        batch_size: int,
         n_batches: int,
         batches_per_worker: int = 2,
         max_workers: int = None,
+        cls_idx: int = None,
     ) -> Iterator[tuple[Patch, int]]:
         """
         Generate batches of patches and labels in parallel.
@@ -398,15 +496,18 @@ class AnnotatedRegionSampler:
         batches of patches and labels. The required number of batches is split
         between worker processes, which are executed in parallel using a
         `ProcessPoolExecutor`. The results are then yielded in chunks of
-        `self.batch_size`.
+        `batch_size`.
 
         Args:
+            batch_size (int): Number of patches per batch.
             n_batches (int): Number of batches to generate.
             batches_per_worker (int): Number of batches to generate per worker
                 process.
             max_workers (int): Maximum number of worker processes to spawn.
                 Defaults to `None`, which means that the number of workers is
                 determined by the `ProcessPoolExecutor`.
+            cls_idx (int): Index of the class to generate patches for. If not
+                provided, patches from all classes are generated.
 
         Yields:
             tuple[Patch, int]: A tuple containing a list of patches and their
@@ -416,20 +517,22 @@ class AnnotatedRegionSampler:
             # split required number of batches between workers
             q = self._split_chunks(n_batches, batches_per_worker)
             futures = [
-                executor.submit(self._gen_single_proc, self.batch_size * i)
+                executor.submit(self._gen_single_proc, batch_size * i, cls_idx)
                 for i in q
             ]
             for future in futures:
                 lst = future.result()
-                for i in range(0, len(lst), self.batch_size):
-                    yield lst[i : i + self.batch_size]
+                for i in range(0, len(lst), batch_size):
+                    yield lst[i : i + batch_size]
 
-    def generator_torch(
+    def torch_generator(
         self,
+        batch_size: int,
         n_batches: int,
         batches_per_worker: int = 2,
         transforms: callable = None,
         max_workers: int = None,
+        cls_idx: int = None,
     ) -> Iterator[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Generate batches of patches and labels in parallel using torch Tensors.
@@ -438,9 +541,10 @@ class AnnotatedRegionSampler:
         generate batches of patches and labels. The required number of batches
         is split between worker processes, which are executed in parallel
         using a `ProcessPoolExecutor`. The results are then yielded in chunks
-        of `self.batch_size`.
+        of `batch_size`.
 
         Args:
+            batch_size (int): Number of patches per batch.
             n_batches (int): Number of batches to generate.
             batches_per_worker (int): Number of batches to generate per worker
                 process. Defaults to 2.
@@ -449,6 +553,8 @@ class AnnotatedRegionSampler:
             max_workers (int): Maximum number of worker processes to spawn.
                 Defaults to `None`, which means that the number of workers is
                 determined by the `ProcessPoolExecutor`.
+            cls_idx (int): Index of the class to generate patches for. If not
+                provided, patches from all classes are generated.
 
         Yields:
             tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing
@@ -458,16 +564,15 @@ class AnnotatedRegionSampler:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             # split required number of batches between workers
             q = self._split_chunks(n_batches, batches_per_worker)
+
             futures = [
-                executor.submit(
-                    self._gen_single_proc_torch, self.batch_size * i
-                )
+                executor.submit(self._gen_single_proc_torch, batch_size * i)
                 for i in q
             ]
             for future in futures:
                 lst = future.result()
-                for i in range(0, len(lst), self.batch_size):
-                    batch_elements = lst[i : i + self.batch_size]
+                for i in range(0, len(lst), batch_size):
+                    batch_elements = lst[i : i + batch_size]
                     features = torch.stack([e[0] for e in batch_elements])
                     labels = torch.stack([e[1] for e in batch_elements])
                     coords = torch.stack([e[2] for e in batch_elements])
@@ -475,9 +580,173 @@ class AnnotatedRegionSampler:
                         features = transforms(features)
                     yield features, labels, coords
 
+    def torch_iterable_dataset(self) -> IterableDataset:
+        """
+        Creates a custom pytorch IterableDataset for generating patches. It can be
+        used with a DataLoader, but may be slower compared to the implemented
+        generator_torch().
+
+        This function returns an instance of a custom IterableDataset that yields
+        features, labels, and coordinates as torch Tensors. It uses an internal
+        generator function `_g` to continuously produce batches of data by randomly
+        sampling regions and extracting patches from them. The dataset is infinite,
+        yielding data indefinitely until the iteration is stopped.
+
+        Returns:
+            IterableDataset: An instance of a custom IterableDataset yielding tuples
+            of features, labels, and coordinates as torch Tensors.
+        """
+
+        def _g():
+            while True:
+                try:
+                    cls_idx = np.random.randint(len(self.classes))
+                    cls = self.classes[cls_idx]
+                    region: RegionAnnotation = np.random.choice(
+                        self.regions[cls],
+                        p=self._weights[cls],
+                    )
+                    for p in self._patches_one_region(
+                        region, self.patches_from_one_region
+                    ):
+                        f = torch.tensor(p.data, dtype=torch.float32) / 255
+                        l = torch.tensor(cls_idx, dtype=torch.int64)
+                        c = torch.tensor(
+                            [p.pos_y, p.pos_y], dtype=torch.float32
+                        )
+                        yield f, l, c
+                except Exception:
+                    continue
+
+        class CustomIterableDataset(IterableDataset):
+            def __init__(self):
+                pass
+
+            def __iter__(self):
+                for features, cls, coords in _g():
+                    yield features, cls, coords
+
+        return CustomIterableDataset()
+
     def __len__(self):
         """
         Returns the approximate number of patches in the dataset.
         """
         ps = self.patch_size * self.layer
-        return int(sum(self._areas_per_cls.values()) / (ps * ps))
+        return int(
+            sum([sum([r.area for r in lst]) for lst in self.regions.values()])
+            / (ps * ps)
+        )
+
+
+class AnnoRegionDenseSampler:
+
+    def __init__(
+        self,
+        img_anno_paths: list[tuple[Path, Path]],
+        layer: int,
+        patch_size: int,
+        stride: int,
+        region_intersection: float = 0.75,
+        classes: list[str] = None,
+    ):
+        """
+        Initialize an AnnoRegionDenseSampler object.
+
+        Args:
+            img_anno_paths: list[tuple[Path, Path]]
+                A list of tuples containing the paths to the images and their
+                corresponding annotations.
+            layer: int
+                The layer of the image to extract patches from.
+            patch_size: int
+                The size of the patches to be extracted.
+            stride: int
+                The spacing between patches.
+            region_intersection: float, optional
+                The minimum fraction of the patch area that must lie within the
+                region in order for the patch to be included in the output.
+                Defaults to 0.75.
+            classes: list[str], optional
+                A list of class labels to be used. If None, all classes are
+                used. Defaults to None.
+        """
+        self.img_anno_paths = img_anno_paths
+        self.layer = layer
+        self.patch_size = patch_size
+        self.stride = stride
+        self.region_intersection = region_intersection
+        self.regions = _parse_annotations(
+            img_anno_paths, layer=layer, classes=classes
+        )
+        self.classes = sorted(list(self.regions.keys()))
+
+    def _patches_one_region(self, region: RegionAnnotation) -> list[Patch]:
+        with PSImage(region.file_path) as psim:
+            coords = region._extract_patch_coords_dense(
+                patch_size=self.patch_size,
+                stride=self.stride,
+                region_intersection=self.region_intersection,
+            )
+            return [
+                Patch(
+                    self.layer,
+                    pos_x=c[1],
+                    pos_y=c[0],
+                    patch_size=self.patch_size,
+                    data=psim.get_region_from_layer(
+                        self.layer,
+                        c,
+                        (
+                            c[0] + self.patch_size,
+                            c[1] + self.patch_size,
+                        ),
+                    ),
+                )
+                for c in coords
+            ]
+
+    def structs_generator(self) -> Iterator[tuple[Patch, int]]:
+        for cls_idx, cls in enumerate(self.classes):
+            regions = self.regions[cls]
+            for region in regions:
+                for p in self._patches_one_region(region):
+                    yield p, cls_idx
+
+
+def extract_and_save_subset(
+    img_anno_paths: list[tuple[Path, Path]],
+    out_folder: Path,
+    patch_size: int,
+    layer: int,
+    patches_per_class: int,
+    intersection=0.95,
+):
+    from patch_samplers.region_samplers import AnnoRegionRndSampler
+    from PIL import Image
+
+    sampler = AnnoRegionRndSampler(
+        img_anno_paths=img_anno_paths,
+        layer=layer,
+        patch_size=patch_size,
+        region_intersection=intersection,
+        region_area_influence=0,  # equal weights for all regions
+        patches_from_one_region=1,  # only one patch per region
+    )
+
+    batch_size = 4
+    for cls_idx, cls in enumerate(sampler.classes):
+        (out_folder / str(cls_idx)).mkdir(parents=True, exist_ok=True)
+        n = patches_per_class // batch_size
+        g = sampler.structs_generator(
+            batch_size=batch_size,
+            n_batches=n,
+            cls_idx=cls_idx,
+        )
+        count = 0
+        for batch in tqdm(g, total=n, desc=f"extracting class {cls}"):
+            for patch, cls in batch:
+                Image.fromarray(patch.data).save(
+                    out_folder / str(cls) / f"{count}.jpg"
+                )
+                count += 1

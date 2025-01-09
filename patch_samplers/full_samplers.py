@@ -12,7 +12,7 @@ from psimage.patches import Patch
 import torch
 
 
-class FullImageRandomSampler:
+class FullImageRndSampler:
 
     def __init__(
         self,

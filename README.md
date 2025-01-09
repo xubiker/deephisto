@@ -18,6 +18,7 @@ The examples of using different methods can be found in [examples folder](/examp
 You can run the scripts with these commands:
 ```python -m examples.sample_full_dense```
 ```python -m examples.sample_full_random```
-```python -m examples.sample_annotated```
-```python -m examples.sample_annotated --torch```
+```python -m examples.sample_annotated_dense```
+```python -m examples.sample_annotated_rnd```
+```python -m examples.sample_annotated_rnd --torch```
 ```python -m examples.predicti_full_dense```
