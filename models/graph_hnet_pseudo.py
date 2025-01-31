@@ -334,7 +334,6 @@ class Graph_HNet(torch.nn.Module):
         
         
         self.type_pooling_layer = GlobalAttentionBlock(self.channels,n_head=8)
-        self.type_pooling_layer2 = GlobalAttentionBlock(self.channels,n_head=8)
         self.model_init()
 
 
@@ -363,7 +362,6 @@ class Graph_HNet(torch.nn.Module):
         x = self.node_proj(x)
         z = x 
         z = self.type_pooling_layer(z,attn_mask)
-        z = self.type_pooling_layer2(z,attn_mask)
         z = rearrange(z, 'b d w -> (b d) w')
         
         x = rearrange(x, 'b (h w) d -> b d h w',h = graph_size)
@@ -372,7 +370,7 @@ class Graph_HNet(torch.nn.Module):
 
         x = self.block1(x,coords=pos) #4 4
         x = self.block2(x,coords=pos) 
-        x = self.block3(x,coords=pos)
+        # x = self.block3(x,coords=pos)
         
 
         x = rearrange(x, 'b d h w -> (b h w) d')

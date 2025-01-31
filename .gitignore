@@ -175,3 +175,6 @@ output/
 checkpoints/
 test/
 data/
+patches_test/
+output_dir/
+previews/

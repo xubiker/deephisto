@@ -261,6 +261,7 @@ class AnnoRegionRndSampler:
         region_area_influence: float = 0.5,
         classes: list[str] = None,
         one_image_for_batch: bool = False,
+        normalize_pos: bool = False,
     ):
         """
         Initialize an AnnoRegionRndSampler object.
@@ -290,6 +291,7 @@ class AnnoRegionRndSampler:
             one_image_for_batch: bool, optional
                 If True, each batch will contain patches from only one image.
                 Defaults to False.
+            normalize_pos : if normalize coords 
 
         """
         self.img_anno_paths = img_anno_paths
@@ -303,6 +305,7 @@ class AnnoRegionRndSampler:
         self.regions, self.regions_per_image = _parse_annotations(
             img_anno_paths, layer=layer, classes=classes
         )
+        self.normalize_pos = normalize_pos
         self.classes = sorted(list(self.regions.keys()))
         self._print_anno_stats(self.regions)
         self._reg_w_all, self._reg_w_per_img, self._img_w, self._img_w_all = (
@@ -507,8 +510,8 @@ class AnnoRegionRndSampler:
             return [
                 Patch(
                     self.layer,
-                    pos_x=c[1],
-                    pos_y=c[0],
+                    pos_x=c[1]/ (psim.width //self.layer)if self.normalize_pos else c[1],
+                    pos_y=c[0]/ (psim.height//self.layer) if self.normalize_pos else c[0],
                     patch_size=self.patch_size,
                     data=psim.get_region_from_layer(
                         self.layer,
@@ -564,7 +567,7 @@ class AnnoRegionRndSampler:
                     k = min(self.patches_from_one_region, n - len(res))
                     res.extend(
                         [
-                            (p, c_idx)
+                            (p, c_idx,self.img_anno_paths[img_idx])# modify for visulazation 
                             for p in self._patches_one_region(region, k)
                         ]
                     )
@@ -612,13 +615,13 @@ class AnnoRegionRndSampler:
         """
 
         res = []
-        for patch, idx in self._gen_single_proc(n):
+        for patch, idx,img_path in self._gen_single_proc(n):
             features = torch.tensor(patch.data, dtype=torch.float32) / 255
             labels = torch.tensor(idx, dtype=torch.int64)
             coords = torch.tensor(
-                [patch.pos_y, patch.pos_x], dtype=torch.float32
+                [patch.pos_x, patch.pos_y], dtype=torch.float32
             )
-            res.append((features, labels, coords))
+            res.append((features, labels, coords,img_path))
         return res
 
     def _split_chunks(self, n, k):
@@ -733,9 +736,10 @@ class AnnoRegionRndSampler:
                     features = torch.stack([e[0] for e in batch_elements])
                     labels = torch.stack([e[1] for e in batch_elements])
                     coords = torch.stack([e[2] for e in batch_elements])
+                    img_path = [str(e[3][0]) for e in batch_elements]
                     if transforms is not None:
                         features = transforms(features)
-                    yield features, labels, coords
+                    yield features, labels, coords,img_path
 
     def torch_iterable_dataset(self) -> IterableDataset:
         """

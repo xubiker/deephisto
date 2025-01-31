@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from typing import Callable
-
+import argparse
 import numpy as np
 from PIL import Image
 from psimage.image import PSImage
@@ -85,7 +85,7 @@ class ImagePredictorPatched:
         ).to(device)
         features = features.permute(0, 3, 1, 2).contiguous()
         coords = torch.tensor(
-            np.stack([np.array(( p.pos_x / self.w,p.pos_y / self.h)) for p in patches]),
+            np.stack([np.array(( p.pos_x / (self.w),p.pos_y / self.h)) for p in patches]),
             dtype=torch.float32,).to(device)
         with torch.no_grad():
             batch_size = 1
@@ -153,17 +153,20 @@ def load_model_gnn(patch_encoder_weights_path,gnn_weights_path, device) -> torch
     return patch_encoder,model
 
 
-if __name__ == "__main__":
+def parse_args():
+    parser = argparse.ArgumentParser(description="WSI Prediction Script")
+    parser.add_argument("--img_path", type=str, required=True, help="Path to the input WSI file (.psi)")
+    parser.add_argument("--patch_encoder_path", type=str, required=True, help="Path to the patch encoder model weights")
+    parser.add_argument("--gnn_path", type=str, required=True, help="Path to the GNN model weights")
+    parser.add_argument("--out_dir", type=str, default="./output/", help="Output directory for saving results")
+    return parser.parse_args()
 
-    img_path = Path(
-        "/home/data_repository/PATH-DT-MSU_dev/WSS2_v2_psi/test/test_01.psi"
-    )
+if __name__ == "__main__":
+    args = parse_args()
 
     # --- load model ---
     device = get_device()
-    patch_encoder,model = load_model_gnn("saves/Mask-Newgraph-hnet-pseudo_k=5_block-2-attn-2/patch_encoder_best-3.pth",
-                                         "saves/Mask-Newgraph-hnet-pseudo_k=5_block-2-attn-2/best-3.pth",
-                                         device)
+    patch_encoder, model = load_model_gnn(args.patch_encoder_path, args.gnn_path, device)
 
     # --- setup all params ---
     anno_dsc = AnnoDescription.with_known_colors(
@@ -173,7 +176,6 @@ if __name__ == "__main__":
             "LP": (64, 170, 72),  # LP (green)
             "MM": (255, 0, 0),  # MM (red)
             "TUM": (33, 67, 156),  # TUM (blue)
-            # "DYS": (128, 0, 255),  # TUM (violet)
         }
     )
     layer = 2
@@ -184,16 +186,16 @@ if __name__ == "__main__":
     patch_sampler = None
     if random_sampler:
         patch_sampler = FullImageRndSampler(
-            img_path, layer=layer, patch_size=224, batch_size=64
+            Path(args.img_path), layer=layer, patch_size=224, batch_size=64
         )
     else:
         patch_sampler = FullImageDenseSampler(
-            img_path, layer=layer, patch_size=224, batch_size=64, stride=112
+            Path(args.img_path), layer=layer, patch_size=224, batch_size=64, stride=112
         )
     predictor = ImagePredictorPatched(
-        img_path,
+        Path(args.img_path),
         patch_sampler=patch_sampler.generator(),
-        model = (patch_encoder,model),
+        model=(patch_encoder, model),
         device=device,
         anno=anno_dsc,
         layer=layer,
@@ -203,5 +205,5 @@ if __name__ == "__main__":
 
     # --- save visualizations ---
     perform_and_save_visualizations(
-        img_path, anno_dsc, pred, out_dir=Path("./output/")
+        Path(args.img_path), anno_dsc, pred, out_dir=Path(args.out_dir)
     )

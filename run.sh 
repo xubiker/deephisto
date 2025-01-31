@@ -1,0 +1,7 @@
+CUDA_VISIBLE_DEVICES=0 python main_train.py \
+--resnet50 --runs_name resnet50_baseline \
+--model resnet50
+
+CUDA_VISIBLE_DEVICES=0 python main_train.py \
+--resnet50 --runs_name graph-hnet-pseudo_baseline \
+--model graph-hnet-pseudo
