@@ -10,6 +10,7 @@ import torch
 from tqdm import tqdm
 import os
 import sys
+import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import get_img_ano_paths
 from models.graph_hnet_pseudo import Graph_HNet
@@ -52,7 +53,7 @@ class ImagePredictorPatched:
     def process(self) -> np.ndarray:
         y_true = []
         y_pred = []
-        progress_bar = tqdm(total=100, desc="Predicting", unit="step")
+        progress_bar = tqdm(total=len(self.patch_sampler), desc="Predicting", unit="step")
         progress = 0
         for batch in self.patch_sampler:
             if len(batch) == 4:
@@ -67,8 +68,6 @@ class ImagePredictorPatched:
             progress+=1
             progress_bar.n = round(progress, 2)
             progress_bar.refresh()
-            if progress == 100:
-                break
         # 将 y_true 和 y_pred 转换为一维数组
         y_true_flat = np.concatenate(y_true).ravel()
         y_pred_flat = np.concatenate(y_pred).ravel()
@@ -170,7 +169,13 @@ def load_model_gnn(patch_encoder_weights_path,gnn_weights_path, device) -> torch
                 torch.nn.Dropout(0),
                 torch.nn.Linear(num_ftrs,5)
             )
-    model = Graph_HNet(num_ftrs,5)
+    parent_dir = os.path.dirname(gnn_weights_path)
+
+    # 构造 config.json 的路径
+    config_path = os.path.join(parent_dir, "config.json")
+    with open(config_path, 'r') as f:
+            config = json.load(f)
+    model = Graph_HNet(num_ftrs,config)
     loadnet = torch.load(patch_encoder_weights_path, map_location=torch.device('cpu'))
     keyname = 'model'
     print(patch_encoder.load_state_dict(loadnet[keyname], strict=True))
@@ -240,7 +245,7 @@ if __name__ == "__main__":
             batches_per_worker=b_per_worker,
         )
     else:
-        dataset = PsiGraphDataset_Test(Path('patches_test'))
+        dataset = PsiGraphDataset_Test(Path(args.test_path))
         patch_sampler = DataLoader(dataset, batch_size=1, shuffle=True)
     predictor = ImagePredictorPatched(
         patch_sampler=patch_sampler,

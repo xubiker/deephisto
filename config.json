@@ -1,29 +1,29 @@
 {
     "nb_classes": 5,
-    "channels": 512,
-    "k": 7,
+    "channels": 1024,
+    "k": 5,
     "blocks": [
         {
-            "in_channels": 512,
-            "out_channels": 512,
-            "k": 7,
+            "in_channels": 1024,
+            "out_channels": 1024,
+            "k": 5,
             "euclidean": true
         },
         {
-            "in_channels": 512,
-            "out_channels": 512,
-            "k": 7,
-            "euclidean": false
+            "in_channels": 1024,
+            "out_channels": 1024,
+            "k": 5,
+            "euclidean": true
         },
         {
-            "in_channels": 512,
-            "out_channels": 512,
-            "k": 7,
-            "euclidean": false
+            "in_channels": 1024,
+            "out_channels": 1024,
+            "k": 5,
+            "euclidean": true
         }
     ],
     "classifier": {
-        "hidden_channels": 32
+        "hidden_channels": 512
     },
     "add_pesudo_layer":true,
     "type_pooling_layer": {

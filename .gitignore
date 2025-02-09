@@ -175,6 +175,6 @@ output/
 checkpoints/
 test/
 data/
-patches_test/
+test_set_saved/
 output_dir/
 previews/

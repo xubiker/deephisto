@@ -19,14 +19,18 @@ def extract_and_save_tests_gnns(img_anno_paths: list[tuple[Path, Path]],
     patch_size: int,
     layer: int,
     n: int,
-    intersection=0.95,
+    region_intersection=0.95,
+    patches_from_one_region = 4,
+    region_area_influence = 0.5,
     graph_size=8,
 ):
     dataset = AnnoRegionRndSampler(
         img_anno_paths,
         patch_size=patch_size,
         layer=layer,
-        patches_from_one_region=4,
+        region_intersection = region_intersection,
+        patches_from_one_region = patches_from_one_region,
+        region_area_influence = region_area_influence,
         one_image_for_batch=True,
         normalize_pos=True
     )

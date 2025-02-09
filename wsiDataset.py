@@ -22,10 +22,13 @@ class PsiGraphDataset_Test(Dataset):
         """
         self.npz_folder = npz_folder
         self.npz_files = sorted(list(npz_folder.glob("*.npz")))  # 获取所有 .npz 文件并排序
-
+        self.if_npy = False
         # 检查是否有文件
         if not self.npz_files:
-            raise ValueError(f"在文件夹 {npz_folder} 中未找到 .npz 文件。")
+            self.npz_files = sorted(list(npz_folder.glob("*.npy")))
+            self.if_npy = True
+        if not self.npz_files:
+            raise ValueError(f"在文件夹 {npz_folder} 中未找到 .npz And .npy 文件。")
 
     def __len__(self):
         """
@@ -47,12 +50,16 @@ class PsiGraphDataset_Test(Dataset):
         """
         # 加载 .npz 文件
         npz_file = self.npz_files[idx]
-        data = np.load(npz_file)
-
-        # 提取数据
-        features = torch.from_numpy(data["features"]).float()  # 转换为 float32 张量
-        y_true = torch.from_numpy(data["y_true"]).long()       # 转换为 int64 张量
-        coords = torch.from_numpy(data["coords"]).float()      # 转换为 float32 张量
+        if not self.if_npy:
+            data = np.load(npz_file)        
+            features = torch.from_numpy(data["features"]).float()  # 转换为 float32 张量
+            y_true = torch.from_numpy(data["y_true"]).long()       # 转换为 int64 张量
+            coords = torch.from_numpy(data["coords"]).float()      # 转换为 float32 张量
+        else:
+            data = np.load(npz_file, allow_pickle=True).item()
+            features = torch.from_numpy(data["imgs"]).float()  # 转换为 float32 张量
+            y_true = torch.from_numpy(data["label"]).long()       # 转换为 int64 张量
+            coords = torch.from_numpy(data["pos"]).float()    
 
         return features, y_true, coords
     

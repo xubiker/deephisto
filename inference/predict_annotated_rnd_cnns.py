@@ -49,7 +49,7 @@ class ImagePredictorPatched:
     def process(self) -> np.ndarray:
         y_true = []
         y_pred = []
-        progress_bar = tqdm(total=100, desc="Predicting", unit="step")
+        progress_bar = tqdm(total=len(self.patch_sampler), desc="Predicting", unit="step")
         progress = 0
         for f, cls, coords in self.patch_sampler:
             patch_preds = self.batch_predictor(f, coords, self.patch_encoder ,self.device)
@@ -61,8 +61,8 @@ class ImagePredictorPatched:
             progress_bar.n = round(progress, 2)
             progress_bar.refresh()
             
-            if progress == 100:
-                break
+            # if progress == 100:
+            #     break
         # 将 y_true 和 y_pred 转换为一维数组
         y_true_flat = np.concatenate(y_true).ravel()
         y_pred_flat = np.concatenate(y_pred).ravel()
@@ -158,16 +158,23 @@ def load_model_cnn(patch_encoder_weights_path, device) -> torch.nn.Module:
     return patch_encoder
 
 
-if __name__ == "__main__":
+import argparse
+from pathlib import Path
 
-    img_anno_paths = get_img_ano_paths(
-        Path("/home/data_repository/PATH-DT-MSU_dev/WSS2_v2_psi"), sample="test"
-    )
+def main():
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description="WSI Prediction Script")
+    parser.add_argument("--data_dir", type=str, required=True, help="Path to the data repository")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the pretrained model")
+    parser.add_argument("--patches_dir", type=str, required=True, help="Path to the patches directory")
+    args = parser.parse_args()
+
+    # 使用命令行参数
+    img_anno_paths = get_img_ano_paths(Path(args.data_dir), sample="test")
 
     # --- load model ---
     device = get_device()
-    patch_encoder = load_model_cnn("/home/z.sun/graph-wsi/pretrained_encoder/resnet-50-best-7.pth",
-                                         device)
+    patch_encoder = load_model_cnn(args.model_path, device)
 
     # --- setup all params ---
     anno_dsc = AnnoDescription.with_known_colors(
@@ -185,35 +192,10 @@ if __name__ == "__main__":
     random_sampler = True
 
     # --- make WSI prediction ---
-    # patch_sampler = None
-    # dataset = AnnoRegionRndSampler(
-    #     img_anno_paths,
-    #     patch_size=224,
-    #     layer=layer,
-    #     patches_from_one_region=4,
-    #     one_image_for_batch=True,
-    #     normalize_pos=True
-    # )
-    dataset = PsiGraphDataset_Test(Path('patches_test'))
-    # setup params
-    n = 100  # number of batches to extract
-    b_size = 64  # number of patches per batch
-    b_per_worker = 2  # number of batches to extract per worker (parallel)
-    # predictor = ImagePredictorPatched(
-    #     patch_sampler=dataset.torch_generator(
-    #         batch_size=b_size,
-    #         n_batches=n,
-    #         batches_per_worker=b_per_worker,
-    #     ),
-    #     model = patch_encoder,
-    #     device=device,
-    #     anno=anno_dsc,
-    #     layer=layer,
-    #     downscale=downscale_vis,
-    # )
+    dataset = PsiGraphDataset_Test(Path(args.patches_dir))
     predictor = ImagePredictorPatched(
         patch_sampler=DataLoader(dataset, batch_size=1, shuffle=True),
-        model = patch_encoder,
+        model=patch_encoder,
         device=device,
         anno=anno_dsc,
         layer=layer,
@@ -221,4 +203,5 @@ if __name__ == "__main__":
     )
     pred = predictor.process()
 
-    
+if __name__ == "__main__":
+    main()

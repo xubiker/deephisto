@@ -119,7 +119,7 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--test_data_path', default="/home/data_repository/PATH-DT-MSU_dev/WSS2_v2_psi", type=str,
                         help='dataset path')
-    parser.add_argument('--test_output_path', default="./patches_test", type=str,
+    parser.add_argument('--test_output_path', default="test_set_saved/patches_test_default", type=str,
                         help='dataset path')
     parser.add_argument('--nb_classes', default=5, type=int,
                         help='number of the classification types')
@@ -356,20 +356,20 @@ def main(args):
         )
         # print('------------------------test on train----------------------------\n')
         
-        data_loader_val = train_val_dataset.torch_generator(
-            batch_size=args.batch_size,
-            n_batches=16,
-            batches_per_worker=args.batches_per_worker,
-            transforms=data_augmentations,
-            max_workers=args.num_workers,
-        )
-        val_stats,class_accuracy = evaluate(data_loader_val, patch_encoder,model, device,args,test=False)
-        if log_writer is not None:
-            log_writer.add_scalar('perf/val_acc1', val_stats['acc1'], epoch)
-            log_writer.add_scalar('perf/val_acc3', val_stats['acc3'], epoch)
-            log_writer.add_scalar('perf/val_loss', val_stats['loss'], epoch)
-            for class_label, acc in class_accuracy.items():
-                log_writer.add_scalar(f'val_class_accuracy/{class_label}', acc['acc'], epoch)
+        # data_loader_val = train_val_dataset.torch_generator(
+        #     batch_size=args.batch_size,
+        #     n_batches=16,
+        #     batches_per_worker=args.batches_per_worker,
+        #     transforms=data_augmentations,
+        #     max_workers=args.num_workers,
+        # )
+        # val_stats,class_accuracy = evaluate(data_loader_val, patch_encoder,model, device,args,test=False)
+        # if log_writer is not None:
+        #     log_writer.add_scalar('perf/val_acc1', val_stats['acc1'], epoch)
+        #     log_writer.add_scalar('perf/val_acc3', val_stats['acc3'], epoch)
+        #     log_writer.add_scalar('perf/val_loss', val_stats['loss'], epoch)
+        #     for class_label, acc in class_accuracy.items():
+        #         log_writer.add_scalar(f'val_class_accuracy/{class_label}', acc['acc'], epoch)
 
         # print('------------------------test on train finish----------------------------\n')
         test_stats,class_accuracy = evaluate(data_loader_test, patch_encoder,model, device,args)
