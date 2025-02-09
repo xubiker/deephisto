@@ -7,10 +7,14 @@ from torch.nn import Sequential as Seq
 import numpy as np
 import torch
 from torch import nn
+import os 
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.gcn_lib.torch_nn import BasicConv, batched_index_select, act_layer
 import torch.nn.functional as F
 from timm.models.layers import DropPath
 from einops import rearrange
+import json 
 
 class SinusoidalEncoder(nn.Module):
 
@@ -158,22 +162,26 @@ class knn(torch.nn.Module):
         return edge_index
 
 class knn_euclidean(torch.nn.Module):
-
-    def __init__(self,k):
+    def __init__(self, k, threshold=0.5):
         super(knn_euclidean, self).__init__()
         self.k = k
+        self.threshold = threshold
         x = torch.arange(8)
         y = torch.arange(8)
         grid_x, grid_y = torch.meshgrid(x, y, indexing='ij')
-        coord = torch.stack([grid_x,grid_y],dim=0).to(torch.float32)
+        coord = torch.stack([grid_x, grid_y], dim=0).to(torch.float32)
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.coord = rearrange(coord, 'd h w -> d (h w)').to(device)
 
-    def forward(self,coords):
-        x= coords
+    def forward(self, coords):
+        x = coords
         batch_size, n_points, n_dims = x.shape
+        # 计算两两之间的距离
         dist = pairwise_distance(x.detach())
-        _, nn_idx = torch.topk(-dist, k=self.k)  #b, n, k
+        # 将大于阈值的距离设置为无穷大
+        dist[dist > self.threshold] = float('inf')
+        # 选择最近的 k 个点
+        _, nn_idx = torch.topk(-dist, k=self.k)  # b, n, k
         center_idx = torch.arange(0, n_points, device=x.device).repeat(batch_size, self.k, 1).transpose(2, 1)
         edge_index = torch.stack((nn_idx, center_idx), dim=0)
         return edge_index
@@ -312,30 +320,40 @@ def from_pesudol_label_get_mask(pseudo_label):
     return attn_mask
 
 class Graph_HNet(torch.nn.Module):
-    def __init__(self, channels,nb_classes=5):
-
+    def __init__(self, in_channel,config):
         super(Graph_HNet, self).__init__()
-        self.nb_classes = nb_classes
-        self.channels = channels
-        # self.pos_embed = nn.Parameter(torch.zeros(1, self.channels, 8, 8))
-        self.pos_embed = nn.Linear(2,self.channels)
-        k = 5
-        
-        self.block1 = Block(in_channels=self.channels, out_channels=self.channels, k=k, euclidean=True)
-        self.block2 = Block(in_channels=self.channels, out_channels=self.channels, k=k, euclidean=False)
-        self.block3 = Block(in_channels=self.channels, out_channels=self.channels, k=k, euclidean=False)
-        self.node_proj = nn.Linear(self.channels,self.channels)
-        self.classifier = Seq(
-            nn.Linear(self.channels,self.channels//2),
-            nn.BatchNorm1d(self.channels//2),
-            nn.ReLU(),
-            nn.Linear(self.channels//2,nb_classes)
-        )
-        
-        
-        self.type_pooling_layer = GlobalAttentionBlock(self.channels,n_head=8)
-        self.model_init()
+        self.nb_classes = config.get('nb_classes', 5)
+        self.add_pesudo_layer = config.get('add_pesudo_layer',True)
+        self.channels = config.get('channels', 64)  # 假设默认值为 64
+        self.pos_embed = nn.Linear(2, self.channels)
+        k = config.get('k', 5)
 
+        self.blocks = nn.ModuleList()
+        block_configs = config.get('blocks', [
+            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': True},
+            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': False},
+            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': False}
+        ])
+        for block_config in block_configs:
+            self.blocks.append(Block(**block_config))
+
+        self.node_proj = nn.Linear(in_channel, self.channels)
+        classifier_config = config.get('classifier', {
+            'hidden_channels': self.channels // 2
+        })
+        self.classifier = Seq(
+            nn.Linear(self.channels, classifier_config['hidden_channels']),
+            nn.BatchNorm1d(classifier_config['hidden_channels']),
+            nn.ReLU(),
+            nn.Linear(classifier_config['hidden_channels'], self.nb_classes)
+        )
+
+        type_pooling_config = config.get('type_pooling_layer', {
+            'n_head': 8
+        })
+        self.type_pooling_layer = GlobalAttentionBlock(self.channels, **type_pooling_config)
+
+        self.model_init()
 
     def model_init(self):
         for m in self.modules():
@@ -346,43 +364,47 @@ class Graph_HNet(torch.nn.Module):
                     m.bias.data.zero_()
                     m.bias.requires_grad = True
 
-    def forward(self, x,pos,pseudo_label):
+    def forward(self, x, pos, pseudo_label):
         graph_size = x.shape[2]
-        
-        pseudo_label = rearrange(pseudo_label,'(b h) -> b h',h = graph_size*graph_size)
+
+        pseudo_label = rearrange(pseudo_label, '(b h) -> b h', h=graph_size * graph_size)
         attn_mask = from_pesudol_label_get_mask(pseudo_label)
-        
 
         pos_ = self.pos_embed(pos)
-        pos_ = rearrange(pos_,'(b h w) d -> b d h w', b=x.shape[0], h=x.shape[2], w=x.shape[3])
-        pos =  rearrange(pos,'(b h) d -> b h d', b=x.shape[0], h=x.shape[2]*x.shape[2]) 
+        pos_ = rearrange(pos_, '(b h w) d -> b d h w', b=x.shape[0], h=x.shape[2], w=x.shape[3])
+        pos = rearrange(pos, '(b h) d -> b h d', b=x.shape[0], h=x.shape[2] * x.shape[2])
 
-        x = rearrange(x, 'b d h w -> b (h w) d') 
-        # x = rearrange(x, 'b d h w -> (b h w) d').unsqueeze(0)
+        x = rearrange(x, 'b d h w -> b (h w) d')
         x = self.node_proj(x)
-        z = x 
-        z = self.type_pooling_layer(z,attn_mask)
+        z = x
+        z = self.type_pooling_layer(z, attn_mask)
         z = rearrange(z, 'b d w -> (b d) w')
-        
-        x = rearrange(x, 'b (h w) d -> b d h w',h = graph_size)
-        x = x + pos_
-        
 
-        x = self.block1(x,coords=pos) #4 4
-        x = self.block2(x,coords=pos) 
-        # x = self.block3(x,coords=pos)
-        
+        x = rearrange(x, 'b (h w) d -> b d h w', h=graph_size)
+        x = x + pos_
+
+        for block in self.blocks:
+            x = block(x, coords=pos)
 
         x = rearrange(x, 'b d h w -> (b h w) d')
-        # x = torch.concat([x,aggregated_type_fea],dim=1)
-        # x = x + aggregated_type_fea
-        x = 0.8 * x + 0.2* z 
+        if self.add_pesudo_layer:
+            x = 0.8 * x + 0.2 * z
         pred_8 = self.classifier(x)
         return pred_8
 
 if __name__ == '__main__':
+    file_path = 'config.json'
+    with open(file_path, 'r') as f:
+        config = json.load(f)
     
-    model = Graph_HNet(2048)
-    input = torch.zeros((2,2048,8,8))
-    pred_8 = model(input,torch.zeros((128,2)))
-    print('here')
+    model = Graph_HNet(config)
+    batch_size = 2
+    channels = config.get('channels', 64)
+    graph_size = 8
+    x = torch.randn(batch_size, channels, graph_size, graph_size)
+    pos = torch.randn(batch_size * graph_size * graph_size, 2)
+    pseudo_label = torch.randn(batch_size * graph_size * graph_size)
+
+    # 前向传播
+    pred_8 = model(x, pos, pseudo_label)
+    print(pred_8.shape)

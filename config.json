@@ -1,0 +1,32 @@
+{
+    "nb_classes": 5,
+    "channels": 512,
+    "k": 7,
+    "blocks": [
+        {
+            "in_channels": 512,
+            "out_channels": 512,
+            "k": 7,
+            "euclidean": true
+        },
+        {
+            "in_channels": 512,
+            "out_channels": 512,
+            "k": 7,
+            "euclidean": false
+        },
+        {
+            "in_channels": 512,
+            "out_channels": 512,
+            "k": 7,
+            "euclidean": false
+        }
+    ],
+    "classifier": {
+        "hidden_channels": 32
+    },
+    "add_pesudo_layer":true,
+    "type_pooling_layer": {
+        "n_head": 8
+    }
+}

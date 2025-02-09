@@ -10,7 +10,17 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["--resnet50","--model=resnet"]
+            // "args": ["--resnet50","--model=resnet"]
+            "args": [
+                "--img_path",
+                "/home/data_repository/PATH-DT-MSU_dev/WSS2_v2_psi/test/test_01.psi",
+                "--patch_encoder_path",
+                "/home/z.sun/deephisto/output_dir/graph-hnet-pseudo_baseline/patch_encoder_best-9.pth",
+                "--gnn_path",
+                "/home/z.sun/deephisto/output_dir/graph-hnet-pseudo_baseline/best-9.pth",
+                "--out_dir",
+                "./output/test_gnn_graph-hnet-pseudo_baseline_01"
+            ]
         }
     ]
 }

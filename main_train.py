@@ -261,10 +261,18 @@ def main(args):
         model = Graph_VNet(num_ftrs,args.nb_classes)
     elif args.model == 'graph-hnet':
         from models.graph_hnet import Graph_HNet
-        model = Graph_HNet(num_ftrs,args.nb_classes)
+        file_path = 'config.json'
+        with open(file_path, 'r') as f:
+            config = json.load(f)
+        
+        model = Graph_HNet(config)
     elif args.model == 'graph-hnet-pseudo':
         from models.graph_hnet_pseudo import Graph_HNet
-        model = Graph_HNet(num_ftrs,args.nb_classes)
+        file_path = 'config.json'
+        with open(file_path, 'r') as f:
+            config = json.load(f)
+        
+        model = Graph_HNet(num_ftrs,config)
     elif args.model == 'simple_gcn': 
         from models.simple_gcn import GCN_model
         model = GCN_model(num_ftrs,args.nb_classes)
@@ -429,7 +437,7 @@ if __name__ == '__main__':
             if 'output_dir'  in root:
                 continue
             for file in files:
-                if file.endswith('.py'):
+                if file.endswith('.py') or file.endswith('.json'):
                     # 构建源文件的完整路径
                     source_file = os.path.join(root, file)
                     

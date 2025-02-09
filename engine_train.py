@@ -20,6 +20,7 @@ def _forward_model_patch_encoder(model,patch_encoder,args,samples,pos,test = Fal
         pos = rearrange(pos,'b n d -> (b n) d', b=batch_size, n =args.graph_size*args.graph_size , d=2 )
     else:
         batch_size = args.batch_size // args.graph_size // args.graph_size
+    
     if args.join_encoder:
         latents = patch_encoder.forward_linear_features(samples)
     elif args.resnet50:
