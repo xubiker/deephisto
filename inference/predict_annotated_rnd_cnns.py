@@ -100,8 +100,12 @@ class ImagePredictorPatched:
         coords = coords.to(device)
         with torch.no_grad():
             batch_size = 1
-            logits,latents = patch_encoder(features)
             
+            outputs = patch_encoder(features)
+            if len(outputs) == 2:
+                logits,latents = outputs
+            else:
+                logits = outputs
             # latents = rearrange(latents,'(b h w) d -> b d h w', b=batch_size, h=8, w=8)
             # _, predicted = torch.max(logits, 1)
             
@@ -143,13 +147,25 @@ def perform_and_save_visualizations(
     )
 
 
-def load_model_cnn(patch_encoder_weights_path, device) -> torch.nn.Module:
-    patch_encoder  = models.resnet50(pretrained=True)
-    num_ftrs = patch_encoder.fc.in_features
-    patch_encoder.fc = torch.nn.Sequential(
-                torch.nn.Dropout(0),
-                torch.nn.Linear(num_ftrs,5)
-            )
+def load_model_cnn(patch_encoder_weights_path, device,model_type = 'resnet50') -> torch.nn.Module:
+    if model_type == 'resnet50':
+        patch_encoder  = models.resnet50(pretrained=True)
+        num_ftrs = patch_encoder.fc.in_features
+        patch_encoder.fc = torch.nn.Sequential(
+                    torch.nn.Dropout(0),
+                    torch.nn.Linear(num_ftrs,5)
+                )
+    elif model_type == 'densenet121':
+    #------------------------densenet121-------------------------------------------------------------------
+        patch_encoder = models.densenet121(pretrained=True)
+        patch_encoder.classifier = torch.nn.Linear(1024, 5)
+    elif model_type == 'mobilenet_v2':
+        # -------------------------mobilenet_v2 -------------------------
+        patch_encoder = models.mobilenet_v2(pretrained=True)
+        patch_encoder.classifier[1] = torch.nn.Linear(in_features=patch_encoder.classifier[1].in_features, out_features=5)
+    elif model_type == 'Efficient_Net':
+        patch_encoder = models.efficientnet_v2_s( pretrained=True)
+        patch_encoder.classifier= torch.nn.Linear(in_features=1280, out_features=5, bias=True)
     loadnet = torch.load(patch_encoder_weights_path, map_location=torch.device('cpu'))
     keyname = 'model'
     print(patch_encoder.load_state_dict(loadnet[keyname], strict=True))
@@ -167,6 +183,7 @@ def main():
     parser.add_argument("--data_dir", type=str, required=True, help="Path to the data repository")
     parser.add_argument("--model_path", type=str, required=True, help="Path to the pretrained model")
     parser.add_argument("--patches_dir", type=str, required=True, help="Path to the patches directory")
+    parser.add_argument("--model_type", type=str, default='resnet50', help="model_type")
     args = parser.parse_args()
 
     # 使用命令行参数
@@ -174,7 +191,7 @@ def main():
 
     # --- load model ---
     device = get_device()
-    patch_encoder = load_model_cnn(args.model_path, device)
+    patch_encoder = load_model_cnn(args.model_path, device,args.model_type)
 
     # --- setup all params ---
     anno_dsc = AnnoDescription.with_known_colors(

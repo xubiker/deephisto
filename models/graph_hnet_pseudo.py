@@ -196,7 +196,7 @@ class AvgPooling(nn.Module):
         
 class Block(torch.nn.Module):
 
-    def __init__(self,in_channels, out_channels, k, euclidean=False):
+    def __init__(self,in_channels, out_channels, k, euclidean=False,ConvType = 'GraphAttention'):
         super(Block, self).__init__()
         self.k = k
         self.euclidean = euclidean
@@ -204,10 +204,14 @@ class Block(torch.nn.Module):
             self.knn_graph = knn(k=self.k)
         else:
             self.knn_graph = knn_euclidean(k=self.k)
-        self.conv = GraphAttention(in_channels, out_channels, k=self.k, act='relu', norm='batch', bias=True)
-        #self.conv = GraphSAGE(in_channels, out_channels, act='relu', norm='batch', bias=True)
-        #self.conv = EdgeConv2d(in_channels, out_channels, act='relu', norm='batch', bias=True)
-        #self.conv = MRConv2d(in_channels, out_channels, act='relu', norm='batch', bias=True)
+        if ConvType == 'GraphAttention':
+            self.conv = GraphAttention(in_channels, out_channels, k=self.k, act='relu', norm='batch', bias=True)
+        elif ConvType == 'GraphSAGE':
+            self.conv = GraphSAGE(in_channels, out_channels, act='relu', norm='batch', bias=True)
+        elif ConvType == 'EdgeConv2d':
+            self.conv = EdgeConv2d(in_channels, out_channels, act='relu', norm='batch', bias=True)
+        elif ConvType == 'MRConv2d':
+            self.conv = MRConv2d(in_channels, out_channels, act='relu', norm='batch', bias=True)
         # self.down = Downsample(in_channels, out_channels)
 
     def forward(self, x,coords=None):
@@ -326,13 +330,14 @@ class Graph_HNet(torch.nn.Module):
         self.add_pesudo_layer = config.get('add_pesudo_layer',True)
         self.channels = config.get('channels', 64)  # 假设默认值为 64
         self.pos_embed = nn.Linear(2, self.channels)
+        self.ConvType = config.get('ConvType','GraphAttention')
         k = config.get('k', 5)
 
         self.blocks = nn.ModuleList()
         block_configs = config.get('blocks', [
-            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': True},
-            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': False},
-            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': False}
+            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': True,'ConvType':self.ConvType},
+            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': False,'ConvType':self.ConvType},
+            {'in_channels': self.channels, 'out_channels': self.channels, 'k': k, 'euclidean': False,'ConvType':self.ConvType}
         ])
         for block_config in block_configs:
             self.blocks.append(Block(**block_config))

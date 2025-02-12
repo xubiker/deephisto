@@ -20,6 +20,11 @@ python main_train.py \
 --model graph-hnet-pseudo
 
 python main_train.py \
---device 1 \
---resnet50 --runs_name graph-hnet-pseudo_k=3_1024_layer3_512_nopesudo \
+--device 0 \
+--resnet50 --runs_name graph-hnet-pseudo_k=9 \
+--model graph-hnet-pseudo
+
+python main_train.py \
+--device 0 \
+--resnet50 --runs_name MRConv2d \
 --model graph-hnet-pseudo
