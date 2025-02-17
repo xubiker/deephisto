@@ -4,8 +4,8 @@ from typing import Callable
 
 import numpy as np
 from PIL import Image
-from psimage.image import PSImage
-from psimage.patches import Patch
+from psimage.core.image import PSImage
+from psimage.core.patches import Patch
 import torch
 from tqdm import tqdm
 
@@ -15,6 +15,7 @@ from models.patch_cls_simple.model import get_model
 from patch_samplers.full_samplers import (
     FullImageDenseSampler,
     FullImageRndSampler,
+    SamplerExecutionMode,
 )
 
 
@@ -147,14 +148,18 @@ if __name__ == "__main__":
         }
     )
     layer = 2
-    downscale_vis = 8
-    random_sampler = False
+    downscale_vis = 16
+    random_sampler = True
 
     # --- make WSI prediction ---
     patch_sampler = None
     if random_sampler:
         patch_sampler = FullImageRndSampler(
-            img_path, layer=layer, patch_size=224, batch_size=64
+            img_path,
+            layer=layer,
+            patch_size=224,
+            batch_size=64,
+            mode=SamplerExecutionMode.INMEMORY_SINGLEPROC,
         )
     else:
         patch_sampler = FullImageDenseSampler(

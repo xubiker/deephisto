@@ -8,7 +8,7 @@ from typing import Iterator
 import numpy as np
 import torch
 from psimage import PSImage
-from psimage.patches import Patch
+from psimage.core.patches import Patch
 from shapely import Polygon
 from tqdm import tqdm
 
