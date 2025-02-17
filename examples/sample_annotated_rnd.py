@@ -37,7 +37,7 @@ if __name__ == "__main__":
         patch_size=224,
         layer=1,
         patches_from_one_region=4,
-        one_image_for_batch=True,
+        one_image_for_batch=True
     )
 
     t0 = time.time()

@@ -145,7 +145,7 @@ venv.bak/
 
 # mkdocs documentation
 /site
-
+saves/
 # mypy
 .mypy_cache/
 .dmypy.json
@@ -175,3 +175,6 @@ output/
 checkpoints/
 test/
 data/
+test_set_saved/
+output_dir/
+previews/
