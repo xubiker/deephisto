@@ -5,7 +5,8 @@ __pycache__/
 
 # C extensions
 *.so
-
+test_set_saved/*
+output_dir/
 # Distribution / packaging
 .Python
 build/
@@ -175,3 +176,4 @@ output/
 checkpoints/
 test/
 data/
+psimage-0.2.0-py3-none-any.whl
