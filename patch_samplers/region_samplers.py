@@ -552,7 +552,7 @@ class AnnoRegionRndSampler:
             while len(res) < n:
                 try:
                     # select class
-                    c_idx = cls_idx or np.random.choice(classes_idx)
+                    c_idx = cls_idx if cls_idx is not None else np.random.choice(classes_idx)
                     cls = self.classes[c_idx]
                     if cls not in classes_for_img:
                         raise Exception(f"Class {cls} not found in image")
@@ -573,7 +573,7 @@ class AnnoRegionRndSampler:
         else:
             while len(res) < n:
                 try:
-                    c_idx = cls_idx or np.random.randint(len(self.classes))
+                    c_idx = cls_idx if cls_idx is not None else np.random.choice(classes_idx)
                     cls = self.classes[c_idx]
                     region: RegionAnnotation = np.random.choice(
                         self.regions[cls],
